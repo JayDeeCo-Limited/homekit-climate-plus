@@ -45,6 +45,28 @@ def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_") or DOMAIN
 
 
+# Reserve aid=1 for the pyhap bridge itself. Accessory aids live in the
+# positive 32-bit range starting just above that.
+_AID_BRIDGE = 1
+_AID_MIN = 2
+_AID_RANGE = (1 << 31) - _AID_MIN
+
+
+def _stable_aid(key: str) -> int:
+    """Deterministic accessory ID derived from a string key.
+
+    Apple Home caches `aid → display name / room assignment`. If an AID
+    gets reassigned to a different accessory between restarts — say,
+    because a new climate entity or preset was inserted earlier in the
+    list — iOS keeps showing the old name against the new accessory. A
+    stable hash-derived AID means adding or removing accessories only
+    affects the ones added or removed; the others keep the same AID
+    forever.
+    """
+    digest = hashlib.sha256(key.encode()).digest()
+    return _AID_MIN + (int.from_bytes(digest[:4], "big") % _AID_RANGE)
+
+
 class HomeKitClimatePlusBridge:
     """Own a pyhap AccessoryDriver + HomeBridge for one YAML block."""
 
@@ -206,7 +228,16 @@ class HomeKitClimatePlusBridge:
         assert self._bridge is not None
         assert self._driver is not None
 
-        next_aid = 2
+        used_aids: set[int] = {_AID_BRIDGE}
+
+        def _unique_aid(key: str) -> int:
+            """Stable aid with linear-probe fallback if two keys collide."""
+            aid = _stable_aid(key)
+            while aid in used_aids:
+                aid = _AID_MIN + ((aid - _AID_MIN + 1) % _AID_RANGE)
+            used_aids.add(aid)
+            return aid
+
         for entity_id in sorted(self.entity_config):
             entity_conf = dict(self.entity_config[entity_id])
             state = self.hass.states.get(entity_id)
@@ -222,13 +253,14 @@ class HomeKitClimatePlusBridge:
             )
 
             # Main climate accessory.
+            main_aid = _unique_aid(f"climate:{entity_id}")
             try:
                 main = HeaterCoolerPlus(
                     self.hass,
                     self._driver,
                     display_name,
                     entity_id,
-                    next_aid,
+                    main_aid,
                     entity_conf,
                 )
             except Exception:  # pragma: no cover — surface at runtime
@@ -243,9 +275,8 @@ class HomeKitClimatePlusBridge:
                 "%s: registered %s as climate accessory aid=%d",
                 DOMAIN,
                 entity_id,
-                next_aid,
+                main_aid,
             )
-            next_aid += 1
 
             # Per-preset switch accessories (mutually exclusive by convention).
             if not entity_conf.get(CONF_LINKED_PRESET_MODES, True):
@@ -254,6 +285,7 @@ class HomeKitClimatePlusBridge:
             if not exposable or none_preset is None:
                 continue
             for preset in exposable:
+                preset_aid = _unique_aid(f"preset:{entity_id}:{preset}")
                 preset_config = {
                     **entity_conf,
                     PLUS_CONFIG_PRESET: preset,
@@ -266,7 +298,7 @@ class HomeKitClimatePlusBridge:
                         self._driver,
                         preset_display,
                         entity_id,
-                        next_aid,
+                        preset_aid,
                         preset_config,
                     )
                 except Exception:
@@ -283,9 +315,8 @@ class HomeKitClimatePlusBridge:
                     DOMAIN,
                     preset_display,
                     entity_id,
-                    next_aid,
+                    preset_aid,
                 )
-                next_aid += 1
 
     async def async_stop(self) -> None:
         """Gracefully shut the bridge down. Safe to call more than once."""
