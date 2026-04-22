@@ -268,9 +268,16 @@ class HeaterCoolerPlus(Thermostat):
         current = state.attributes.get(ATTR_PRESET_MODE)
 
         for preset in exposed:
+            # unique_id must differ per service on the same accessory — the
+            # vendored HomeIIDManager derives a stable IID from it, and two
+            # Switch services without unique_id collide (both hash to the
+            # same IID).
             serv = self.add_preload_service(
-                SERV_SWITCH, [CHAR_ON, CHAR_NAME]
+                SERV_SWITCH,
+                [CHAR_ON, CHAR_NAME],
+                unique_id=f"preset_{preset}",
             )
+            serv.display_name = preset.title()
             serv.configure_char(CHAR_NAME, value=preset.title())
             char_on = serv.configure_char(
                 CHAR_ON,
