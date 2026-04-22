@@ -103,10 +103,11 @@ class HeaterCoolerPlus(Thermostat):
         minimal required characteristic) and link it to the primary
         Thermostat service.
         """
-        try:
-            return self.get_service(SERV_FANV2)
-        except ValueError:
-            pass
+        # pyhap's Accessory.get_service returns None (not raises) when the
+        # service is absent.
+        existing = self.get_service(SERV_FANV2)
+        if existing is not None:
+            return existing
 
         serv_thermostat = self.get_service(SERV_THERMOSTAT)
         serv_fan = self.add_preload_service(SERV_FANV2, [CHAR_ACTIVE])
