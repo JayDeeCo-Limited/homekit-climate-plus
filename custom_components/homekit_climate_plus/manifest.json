@@ -1,12 +1,12 @@
 {
   "domain": "homekit_climate_plus",
   "name": "HomeKit Climate Plus",
-  "version": "0.1.0",
-  "documentation": "https://github.com/JayDeeCo-Limited/homekit-climate-plus",
-  "issue_tracker": "https://github.com/JayDeeCo-Limited/homekit-climate-plus/issues",
+  "after_dependencies": ["homekit"],
   "codeowners": ["@JayDeeCo"],
   "dependencies": [],
-  "after_dependencies": ["homekit"],
+  "documentation": "https://github.com/JayDeeCo-Limited/homekit-climate-plus",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/JayDeeCo-Limited/homekit-climate-plus/issues",
   "requirements": ["HAP-python>=4.9.2"],
-  "iot_class": "local_push"
+  "version": "0.1.0"
 }
