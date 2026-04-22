@@ -25,8 +25,8 @@ spec and roadmap.
 ## Install (HACS, custom repository)
 
 1. In HACS, **Integrations → ⋯ → Custom repositories**
-2. Add `https://github.com/JayDeeCo/homekit-climate-plus` with category
-   `Integration`
+2. Add `https://github.com/JayDeeCo-Limited/homekit-climate-plus` with
+   category `Integration`
 3. Install **HomeKit Climate Plus**
 4. Restart Home Assistant
 
