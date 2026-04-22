@@ -15,6 +15,17 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-homeassistant-custom-component HAP-python
+          # Test environment needs HA's full `homekit` component import
+          # chain, which eagerly pulls in haffmpeg / base36 / PyQRCode /
+          # fnv-hash-fast. HA installs those only when stock homekit is
+          # enabled, so a plain pip install of HA leaves them out.
+          pip install \
+            pytest \
+            pytest-homeassistant-custom-component \
+            'HAP-python==5.0.0' \
+            haffmpeg \
+            base36 \
+            PyQRCode \
+            fnv-hash-fast
       - name: Run tests
         run: pytest -q
