@@ -36,7 +36,14 @@ def test_bridge_can_be_instantiated_without_starting() -> None:
     hass.config.path.return_value = "/tmp/ha-storage"
 
     bridge = HomeKitClimatePlusBridge(
-        hass, name="Climate Bridge", port=21065, pin=None
+        hass,
+        name="Climate Bridge",
+        port=21065,
+        pin=None,
+        entity_config={
+            "climate.daikin_ac": {},
+            "climate.bedroom_ac": {"linked_swing_mode": False},
+        },
     )
 
     assert bridge.name == "Climate Bridge"
@@ -45,3 +52,20 @@ def test_bridge_can_be_instantiated_without_starting() -> None:
     assert bridge.persist_path.endswith(
         "homekit_climate_plus.climate_bridge"
     )
+    assert bridge.synthetic_entry_id == "homekit_climate_plus_climate_bridge"
+    assert set(bridge.entity_config) == {
+        "climate.daikin_ac",
+        "climate.bedroom_ac",
+    }
+
+
+def test_heater_cooler_plus_is_a_thermostat_subclass() -> None:
+    """Structural sanity: HeaterCoolerPlus inherits from the vendored Thermostat."""
+    from custom_components.homekit_climate_plus.type_thermostats import (
+        HeaterCoolerPlus,
+    )
+    from custom_components.homekit_climate_plus.vendored.type_thermostats import (
+        Thermostat,
+    )
+
+    assert issubclass(HeaterCoolerPlus, Thermostat)

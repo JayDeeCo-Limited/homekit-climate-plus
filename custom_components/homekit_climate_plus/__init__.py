@@ -74,6 +74,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         name=domain_conf[CONF_NAME],
         port=domain_conf[CONF_PORT],
         pin=domain_conf.get(CONF_PIN),
+        entity_config=domain_conf.get(CONF_ENTITY_CONFIG, {}),
     )
     await bridge.async_start()
 
@@ -85,11 +86,4 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["bridge"] = bridge
     hass.data[DOMAIN]["config"] = domain_conf
-
-    _LOGGER.info(
-        "%s ready, %d entity/entities queued for accessory registration "
-        "(wiring lands in a follow-up commit)",
-        DOMAIN,
-        len(domain_conf.get(CONF_ENTITY_CONFIG, {})),
-    )
     return True
