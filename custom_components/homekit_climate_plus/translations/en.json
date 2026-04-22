@@ -30,15 +30,10 @@
     "step": {
       "init": {
         "title": "Climate entities",
-        "description": "Pick the climate entities this bridge should expose. Next you'll be able to tune each entity's swing / preset / linked-sensor settings. The bridge will reload automatically when you submit.",
+        "description": "Add or remove climate entities on this bridge. The bridge will reload automatically when you submit.\n\nAdvanced per-entity settings (swing mode, preset switches, linked humidity / battery sensors, custom fan-mode mapping) live in `configuration.yaml` — see the integration's README for details.",
         "data": {
           "entities": "Climate entities to expose"
         }
-      },
-      "entity_options": {
-        "title": "Per-entity settings",
-        "description": "Tune the {entity_count} climate entity/entities you selected. Each has four optional switches:\n\n- **linked_swing_mode** — attach a HomeKit SwingMode control if the entity supports swing\n- **linked_preset_modes** — expose each non-`none` preset as a separate Switch tile\n- **linked_humidity_sensor** — link a sensor to show as humidity on the climate tile\n- **linked_battery_sensor** — link a sensor to report battery level on the climate tile\n\nField names are prefixed with the entity ID so each entity's settings stay distinct. Leave sensor fields blank for no linking.",
-        "data": {}
       }
     }
   }
