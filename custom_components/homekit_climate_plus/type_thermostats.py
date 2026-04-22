@@ -88,52 +88,73 @@ class HeaterCoolerPlus(Thermostat):
         self._plus_char_humidity = None
         self._plus_linked_humidity_entity: str | None = None
         super().__init__(*args)
-        self._plus_setup_fan()
-        self._plus_setup_swing()
+        self._plus_setup_extended_fan()
         self._plus_setup_presets()
         self._plus_setup_humidity()
 
-    # --- Fanv2 provisioning -------------------------------------------------
+    # --- Combined fan / swing setup -----------------------------------------
 
-    def _plus_get_or_create_fanv2(self) -> Any:
-        """Return the Fanv2 service, creating a linked one if missing.
+    def _plus_setup_extended_fan(self) -> None:
+        """Build one Fanv2 service with RotationSpeed and/or SwingMode.
 
-        If the vendored base class already added a Fanv2, that's the one we
-        extend. Otherwise we add a fresh Fanv2 with just CHAR_ACTIVE (the
-        minimal required characteristic) and link it to the primary
-        Thermostat service.
+        pyhap requires every characteristic on a service to be declared at
+        `add_preload_service` time — `configure_char` cannot add new chars
+        to an already-built service. So we have to decide upfront what
+        we need, build the Fanv2 once with all of them, then configure
+        each.
+
+        We only take this path when the vendored base class hasn't
+        already put those characteristics on its own Fanv2. If the base
+        class handled one of them (e.g. via its predefined-fan-mode
+        filter), we defer to its wiring.
         """
-        # pyhap's Accessory.get_service returns None (not raises) when the
-        # service is absent.
-        existing = self.get_service(SERV_FANV2)
-        if existing is not None:
-            return existing
-
-        serv_thermostat = self.get_service(SERV_THERMOSTAT)
-        serv_fan = self.add_preload_service(SERV_FANV2, [CHAR_ACTIVE])
-        serv_thermostat.add_linked_service(serv_fan)
-        state = self.hass.states.get(self.entity_id)
-        active = self._plus_compute_active(state) if state else 0
-        self._plus_char_active = serv_fan.configure_char(
-            CHAR_ACTIVE,
-            value=active,
-            setter_callback=self._plus_set_fan_active,
-        )
-        return serv_fan
-
-    # --- Fan rotation-speed setup ------------------------------------------
-
-    def _plus_setup_fan(self) -> None:
-        """Attach a RotationSpeed characteristic if the base class skipped it."""
-        if CHAR_ROTATION_SPEED in self.fan_chars:
-            return
         state = self.hass.states.get(self.entity_id)
         if state is None:
             return
-        fan_modes: list[str] = list(state.attributes.get(ATTR_FAN_MODES) or [])
-        if not fan_modes:
+        features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
+        fan_modes = list(state.attributes.get(ATTR_FAN_MODES) or [])
+        swing_modes = list(state.attributes.get(ATTR_SWING_MODES) or [])
+
+        base_has_rotation = CHAR_ROTATION_SPEED in self.fan_chars
+        base_has_swing = CHAR_SWING_MODE in self.fan_chars
+
+        want_rotation = bool(fan_modes) and not base_has_rotation
+        want_swing = (
+            self.config.get(CONF_LINKED_SWING_MODE, True)
+            and bool(features & ClimateEntityFeature.SWING_MODE)
+            and bool(swing_modes)
+            and not base_has_swing
+        )
+
+        if not (want_rotation or want_swing):
             return
 
+        # Build the Fanv2 with every characteristic we'll need.
+        chars = [CHAR_ACTIVE]
+        if want_rotation:
+            chars.append(CHAR_ROTATION_SPEED)
+        if want_swing:
+            chars.append(CHAR_SWING_MODE)
+
+        serv_thermostat = self.get_service(SERV_THERMOSTAT)
+        serv_fan = self.add_preload_service(SERV_FANV2, chars)
+        serv_thermostat.add_linked_service(serv_fan)
+
+        # Active (always).
+        self._plus_char_active = serv_fan.configure_char(
+            CHAR_ACTIVE,
+            value=self._plus_compute_active(state),
+            setter_callback=self._plus_set_fan_active,
+        )
+
+        if want_rotation:
+            self._plus_configure_rotation_speed(serv_fan, state, fan_modes)
+        if want_swing:
+            self._plus_configure_swing_mode(serv_fan, state, swing_modes)
+
+    def _plus_configure_rotation_speed(
+        self, serv_fan: Any, state: State, fan_modes: list[str]
+    ) -> None:
         override = self.config.get(CONF_FAN_MODE_MAPPING) or {}
         mapping: dict[str, int]
         if override:
@@ -144,7 +165,6 @@ class HeaterCoolerPlus(Thermostat):
             return
         self._plus_mapping = mapping
 
-        serv_fan = self._plus_get_or_create_fanv2()
         current_mode = state.attributes.get(ATTR_FAN_MODE)
         current_percent = mapping.get(current_mode, 100)
 
@@ -162,35 +182,15 @@ class HeaterCoolerPlus(Thermostat):
             mapping,
         )
 
-    # --- Swing-mode setup ---------------------------------------------------
-
-    def _plus_setup_swing(self) -> None:
-        """Attach a SwingMode characteristic if the base class skipped it."""
-        if not self.config.get(CONF_LINKED_SWING_MODE, True):
-            return
-        if CHAR_SWING_MODE in self.fan_chars:
-            return  # base class (or our own fan setup above) handled it
-        state = self.hass.states.get(self.entity_id)
-        if state is None:
-            return
-        features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
-        if not features & ClimateEntityFeature.SWING_MODE:
-            return
-        swing_modes: list[str] = list(
-            state.attributes.get(ATTR_SWING_MODES) or []
-        )
-        if not swing_modes:
-            return
-
+    def _plus_configure_swing_mode(
+        self, serv_fan: Any, state: State, swing_modes: list[str]
+    ) -> None:
         off_mode, on_mode = self._plus_classify_swing(swing_modes)
         if on_mode is None:
-            # Only an "off" mode (or no modes at all after filtering) —
-            # nothing meaningful to toggle.
             return
         self._plus_swing_off = off_mode
         self._plus_swing_on = on_mode
 
-        serv_fan = self._plus_get_or_create_fanv2()
         current = state.attributes.get(ATTR_SWING_MODE)
         value = 1 if current and current != off_mode else 0
         self._plus_char_swing = serv_fan.configure_char(
