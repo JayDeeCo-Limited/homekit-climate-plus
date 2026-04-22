@@ -11,25 +11,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          # 3.13 required so pip can pick a pytest-homeassistant-custom-component
-          # version that ships HA 2026.4.x constants like TYPE_AIR_PURIFIER —
-          # older test-HA bundles miss them and our vendored accessories.py fails
-          # to import.
-          python-version: "3.13"
+          python-version: "3.12"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          # Test environment needs HA's full `homekit` component import
-          # chain, which eagerly pulls in haffmpeg / base36 / PyQRCode /
-          # fnv-hash-fast. HA installs those only when stock homekit is
-          # enabled, so a plain pip install of HA leaves them out.
-          pip install \
-            pytest \
-            pytest-homeassistant-custom-component \
-            'HAP-python==5.0.0' \
-            ha-ffmpeg \
-            base36 \
-            PyQRCode \
-            fnv-hash-fast
+          # Minimal test environment: pure-Python pytest plus HA's core
+          # test helpers. We deliberately do NOT pull in the full HA
+          # homekit chain (turbojpeg, ffmpeg, PyQRCode, base36, etc.) —
+          # `custom_components/homekit_climate_plus/__init__.py` imports
+          # the bridge module lazily so test collection doesn't trigger
+          # that chain. Bridge and accessory integration tests belong in
+          # a future suite with a real HA fixture.
+          pip install pytest pytest-homeassistant-custom-component
       - name: Run tests
         run: pytest -q

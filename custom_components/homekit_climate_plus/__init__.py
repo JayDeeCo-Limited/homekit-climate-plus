@@ -15,7 +15,6 @@ from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant
 import homeassistant.helpers.config_validation as cv
 
-from .bridge import HomeKitClimatePlusBridge
 from .const import (
     CONF_ENTITY_CONFIG,
     CONF_FAN_MODE_MAPPING,
@@ -68,6 +67,13 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     domain_conf = config.get(DOMAIN)
     if domain_conf is None:
         return True
+
+    # Imported here (not at module top) so that `custom_components.
+    # homekit_climate_plus.util` and `.const` can be imported by tests
+    # without dragging in the full HA `homekit` package — it has hard
+    # system-library dependencies (turbojpeg, libjpeg-turbo, ffmpeg) that
+    # aren't worth installing just for pure-Python unit tests.
+    from .bridge import HomeKitClimatePlusBridge
 
     bridge = HomeKitClimatePlusBridge(
         hass,
