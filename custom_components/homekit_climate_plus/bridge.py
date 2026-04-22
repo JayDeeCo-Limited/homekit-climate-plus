@@ -75,6 +75,26 @@ class HomeKitClimatePlusBridge:
             / f"{DOMAIN}.{_slugify(self.name)}"
         )
 
+    @property
+    def stable_mac(self) -> str:
+        """Deterministic, bridge-name-derived locally-administered MAC.
+
+        Every HomeKit bridge in the same LAN needs a unique MAC — pyhap
+        advertises it as the `id=` field in the `_hap._tcp` mDNS TXT
+        record. HA's vendored HomeDriver intentionally initialises with
+        EMPTY_MAC (00:00:00:00:00:00) to avoid pyhap's expensive random
+        generation, expecting each caller to stamp a real MAC before
+        `async_start`. Without this, our bridge collides with every
+        other HA-spawned bridge (they all use EMPTY_MAC until stamped)
+        and iOS mis-routes pair-verify requests to whichever sibling
+        picks up the TCP connection first.
+        """
+        digest = hashlib.sha256(self.synthetic_entry_id.encode()).digest()
+        first = (digest[0] & 0xFE) | 0x02  # locally-administered, unicast
+        return ":".join(
+            [f"{first:02X}"] + [f"{b:02X}" for b in digest[1:6]]
+        )
+
     # --- Lifecycle ----------------------------------------------------------
 
     async def async_start(self) -> None:
