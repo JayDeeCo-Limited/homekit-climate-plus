@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from homeassistant.components import zeroconf
+from homeassistant.components import persistent_notification, zeroconf
 from homeassistant.components.homekit.iidmanager import AccessoryIIDStorage
 from homeassistant.const import ATTR_FRIENDLY_NAME
 from homeassistant.core import HomeAssistant
@@ -114,6 +114,34 @@ class HomeKitClimatePlusBridge:
             self._driver.state.pincode.decode(),
             self.persist_path,
             len(self.entity_config),
+        )
+
+        if not self._driver.state.paired:
+            self._show_pairing_notification()
+
+    def _show_pairing_notification(self) -> None:
+        """Post a persistent notification with the setup code.
+
+        We don't use HA's `async_show_setup_message` — it depends on stock
+        homekit's runtime_data and QR-serving view. A plain text PIN is
+        fine: Apple Home lets the user type the code manually via
+        "More options…" on the Add Accessory screen.
+        """
+        assert self._driver is not None
+        pin = self._driver.state.pincode.decode()
+        message = (
+            f"To pair **{self.name}** with Apple Home:\n\n"
+            f"1. Open the **Home** app on iPhone\n"
+            f"2. Tap **+** → **Add Accessory**\n"
+            f"3. Tap **More options…** and select **{self.name}**\n"
+            f"4. When asked, enter the setup code: **{pin}**\n\n"
+            f"This notification can be dismissed once pairing is complete."
+        )
+        persistent_notification.async_create(
+            self.hass,
+            message,
+            title=f"{DOMAIN}: pairing required",
+            notification_id=f"{DOMAIN}_{self.synthetic_entry_id}_pairing",
         )
 
     def _register_climate_accessories(self) -> None:

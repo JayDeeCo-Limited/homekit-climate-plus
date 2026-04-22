@@ -23,7 +23,7 @@ jobs:
             pytest \
             pytest-homeassistant-custom-component \
             'HAP-python==5.0.0' \
-            haffmpeg \
+            ha-ffmpeg \
             base36 \
             PyQRCode \
             fnv-hash-fast
