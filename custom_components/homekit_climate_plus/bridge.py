@@ -86,20 +86,29 @@ class HomeKitClimatePlusBridge:
         self._iid_storage = AccessoryIIDStorage(self.hass, self.synthetic_entry_id)
         await self._iid_storage.async_initialize()
 
-        self._driver = HomeDriver(
-            hass=self.hass,
-            entry_id=self.synthetic_entry_id,
-            bridge_name=self.name,
-            entry_title=self.name,
-            iid_storage=self._iid_storage,
-            port=self.port,
-            persist_file=self.persist_path,
-            pincode=self.pin.encode() if self.pin else None,
-            async_zeroconf_instance=async_zc_instance,
-            loop=self.hass.loop,
-        )
-        self._bridge = HomeBridge(self.hass, self._driver, self.name)
-        self._driver.add_accessory(accessory=self._bridge)
+        # HomeDriver (pyhap AccessoryDriver) reads characteristics.json
+        # synchronously at init, and add_accessory reads persist_file
+        # synchronously — both trigger HA's "blocking call inside event
+        # loop" warning. Build everything in an executor thread, then the
+        # main loop resumes with a fully-wired driver + bridge.
+        def _build() -> tuple[HomeDriver, HomeBridge]:
+            driver = HomeDriver(
+                hass=self.hass,
+                entry_id=self.synthetic_entry_id,
+                bridge_name=self.name,
+                entry_title=self.name,
+                iid_storage=self._iid_storage,
+                port=self.port,
+                persist_file=self.persist_path,
+                pincode=self.pin.encode() if self.pin else None,
+                async_zeroconf_instance=async_zc_instance,
+                loop=self.hass.loop,
+            )
+            bridge = HomeBridge(self.hass, driver, self.name)
+            driver.add_accessory(accessory=bridge)
+            return driver, bridge
+
+        self._driver, self._bridge = await self.hass.async_add_executor_job(_build)
 
         self._register_climate_accessories()
 

@@ -55,10 +55,16 @@ class HeaterCoolerPlus(Thermostat):
     """Thermostat accessory with a linked Fanv2 for arbitrary fan-mode names."""
 
     def __init__(self, *args: Any) -> None:
-        super().__init__(*args)
+        # Initialize our attributes BEFORE super().__init__ runs. The parent
+        # Thermostat.__init__ calls self.async_update_state(state) at the
+        # tail to seed HomeKit characteristics from the current HA entity
+        # state — and via MRO that dispatches to OUR override, which reads
+        # self._plus_mapping. If we set these after super(), the override
+        # hits AttributeError.
         self._plus_mapping: dict[str, int] | None = None
         self._plus_char_active = None
         self._plus_char_speed = None
+        super().__init__(*args)
         self._plus_setup_fan()
 
     # --- Setup --------------------------------------------------------------
