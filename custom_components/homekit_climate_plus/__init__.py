@@ -4,9 +4,6 @@ Runs a self-contained pyhap HomeKit bridge alongside Home Assistant's stock
 HomeKit Bridge, exposing `climate.*` entities as single accessories with
 linked Fanv2, SwingMode, preset, and sensor services. See PRD.md for the
 full spec.
-
-This file currently implements only YAML config-schema registration. Bridge
-lifecycle is a v0.1 TODO (see bridge.py).
 """
 from __future__ import annotations
 
@@ -14,10 +11,11 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant
 import homeassistant.helpers.config_validation as cv
 
+from .bridge import HomeKitClimatePlusBridge
 from .const import (
     CONF_ENTITY_CONFIG,
     CONF_FAN_MODE_MAPPING,
@@ -66,17 +64,32 @@ CONFIG_SCHEMA = vol.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    """Register YAML config. Bridge startup lands in v0.1."""
+    """Start the homekit_climate_plus bridge from YAML config."""
     domain_conf = config.get(DOMAIN)
     if domain_conf is None:
         return True
 
+    bridge = HomeKitClimatePlusBridge(
+        hass,
+        name=domain_conf[CONF_NAME],
+        port=domain_conf[CONF_PORT],
+        pin=domain_conf.get(CONF_PIN),
+    )
+    await bridge.async_start()
+
+    async def _stop(_event: Event) -> None:
+        await bridge.async_stop()
+
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
+
     hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["bridge"] = bridge
     hass.data[DOMAIN]["config"] = domain_conf
 
     _LOGGER.info(
-        "homekit_climate_plus scaffold loaded for %d entity/entities "
-        "(bridge startup pending)",
+        "%s ready, %d entity/entities queued for accessory registration "
+        "(wiring lands in a follow-up commit)",
+        DOMAIN,
         len(domain_conf.get(CONF_ENTITY_CONFIG, {})),
     )
     return True
