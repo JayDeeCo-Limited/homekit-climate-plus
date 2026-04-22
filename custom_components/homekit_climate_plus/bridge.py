@@ -27,8 +27,14 @@ from homeassistant.const import ATTR_FRIENDLY_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import STORAGE_DIR
 
-from .const import CONF_ENTITY_CONFIG, DOMAIN
-from .type_thermostats import HeaterCoolerPlus
+from .const import CONF_ENTITY_CONFIG, CONF_LINKED_PRESET_MODES, DOMAIN
+from .type_thermostats import (
+    PLUS_CONFIG_NONE_PRESET,
+    PLUS_CONFIG_PRESET,
+    HeaterCoolerPlus,
+    PresetSwitchAccessory,
+    extract_exposable_presets,
+)
 from .vendored.accessories import HomeBridge, HomeDriver
 
 _LOGGER = logging.getLogger(__name__)
@@ -181,14 +187,28 @@ class HomeKitClimatePlusBridge:
         )
 
     def _register_climate_accessories(self) -> None:
-        """Attach a HeaterCoolerPlus to the bridge for every configured entity."""
+        """Attach accessories to the bridge for every configured climate entity.
+
+        Each climate entity gets one `HeaterCoolerPlus` (the main tile with
+        temperature, mode, fan speed, swing). If the entity advertises
+        preset support and has a `none` preset, each non-`none` preset
+        also gets its own `PresetSwitchAccessory` — a standalone Switch
+        tile labelled e.g. "Air Conditioner — Away". Separate accessories
+        (not linked services) because Apple Home doesn't reliably label
+        repeated linked services of the same type.
+
+        AIDs are deterministic: climate entities sort alphabetically, each
+        entity takes one AID for itself plus one per exposed preset. Adding
+        or removing a climate entity in the middle of the list will shift
+        downstream AIDs, which may cause iOS to treat those as new
+        accessories on next sync.
+        """
         assert self._bridge is not None
         assert self._driver is not None
 
-        # Deterministic aid assignment: sort by entity_id so IDs don't shift
-        # when the user adds or removes an entity in the middle of the list.
-        for aid, entity_id in enumerate(sorted(self.entity_config), start=2):
-            entity_conf = dict(self.entity_config[entity_id])  # per-entity config
+        next_aid = 2
+        for entity_id in sorted(self.entity_config):
+            entity_conf = dict(self.entity_config[entity_id])
             state = self.hass.states.get(entity_id)
             if state is None:
                 _LOGGER.warning(
@@ -200,26 +220,72 @@ class HomeKitClimatePlusBridge:
             display_name = (
                 state.attributes.get(ATTR_FRIENDLY_NAME) or entity_id
             )
+
+            # Main climate accessory.
             try:
-                accessory = HeaterCoolerPlus(
+                main = HeaterCoolerPlus(
                     self.hass,
                     self._driver,
                     display_name,
                     entity_id,
-                    aid,
+                    next_aid,
                     entity_conf,
                 )
-            except Exception:  # pragma: no cover — surface at runtime with context
+            except Exception:  # pragma: no cover — surface at runtime
                 _LOGGER.exception(
                     "%s: failed to build HeaterCoolerPlus for %s",
                     DOMAIN,
                     entity_id,
                 )
                 continue
-            self._bridge.add_accessory(accessory)
+            self._bridge.add_accessory(main)
             _LOGGER.debug(
-                "%s: registered %s as accessory aid=%d", DOMAIN, entity_id, aid
+                "%s: registered %s as climate accessory aid=%d",
+                DOMAIN,
+                entity_id,
+                next_aid,
             )
+            next_aid += 1
+
+            # Per-preset switch accessories (mutually exclusive by convention).
+            if not entity_conf.get(CONF_LINKED_PRESET_MODES, True):
+                continue
+            exposable, none_preset = extract_exposable_presets(state)
+            if not exposable or none_preset is None:
+                continue
+            for preset in exposable:
+                preset_config = {
+                    **entity_conf,
+                    PLUS_CONFIG_PRESET: preset,
+                    PLUS_CONFIG_NONE_PRESET: none_preset,
+                }
+                preset_display = f"{display_name} — {preset.title()}"
+                try:
+                    preset_acc = PresetSwitchAccessory(
+                        self.hass,
+                        self._driver,
+                        preset_display,
+                        entity_id,
+                        next_aid,
+                        preset_config,
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        "%s: failed to build preset %r switch for %s",
+                        DOMAIN,
+                        preset,
+                        entity_id,
+                    )
+                    continue
+                self._bridge.add_accessory(preset_acc)
+                _LOGGER.debug(
+                    "%s: registered preset switch '%s' for %s as aid=%d",
+                    DOMAIN,
+                    preset_display,
+                    entity_id,
+                    next_aid,
+                )
+                next_aid += 1
 
     async def async_stop(self) -> None:
         """Gracefully shut the bridge down. Safe to call more than once."""

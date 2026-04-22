@@ -38,7 +38,6 @@ from homeassistant.components.climate import (
 )
 from homeassistant.components.homekit.const import (
     CHAR_ACTIVE,
-    CHAR_NAME,
     CHAR_ON,
     CHAR_ROTATION_SPEED,
     CHAR_SWING_MODE,
@@ -48,6 +47,7 @@ from homeassistant.components.homekit.const import (
     SERV_SWITCH,
     SERV_THERMOSTAT,
 )
+from pyhap.const import CATEGORY_SWITCH
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_SUPPORTED_FEATURES,
@@ -60,11 +60,16 @@ from homeassistant.core import State, callback
 from .const import (
     CONF_FAN_MODE_MAPPING,
     CONF_LINKED_HUMIDITY_SENSOR,
-    CONF_LINKED_PRESET_MODES,
     CONF_LINKED_SWING_MODE,
 )
 from .util import auto_fan_mode_mapping, fan_mode_for_percent
+from .vendored.accessories import HomeAccessory
 from .vendored.type_thermostats import Thermostat
+
+# Internal keys the bridge stuffs into PresetSwitchAccessory's `config` dict
+# so we don't have to change HomeAccessory's __init__ signature.
+PLUS_CONFIG_PRESET = "__plus_preset"
+PLUS_CONFIG_NONE_PRESET = "__plus_none_preset"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,13 +88,10 @@ class HeaterCoolerPlus(Thermostat):
         self._plus_char_swing = None
         self._plus_swing_off: str | None = None
         self._plus_swing_on: str | None = None
-        self._plus_preset_chars: dict[str, Any] = {}
-        self._plus_none_preset: str | None = None
         self._plus_char_humidity = None
         self._plus_linked_humidity_entity: str | None = None
         super().__init__(*args)
         self._plus_setup_extended_fan()
-        self._plus_setup_presets()
         self._plus_setup_humidity()
 
     # --- Combined fan / swing setup -----------------------------------------
@@ -220,96 +222,6 @@ class HeaterCoolerPlus(Thermostat):
         off_mode = next((m for m in swing_modes if m.lower() == "off"), None)
         on_mode = next((m for m in swing_modes if m != off_mode), None)
         return off_mode, on_mode
-
-    # --- Preset-mode switches -----------------------------------------------
-
-    def _plus_setup_presets(self) -> None:
-        """Expose each preset as a linked Switch. Mutually exclusive by convention.
-
-        HomeKit has no native "preset selector" characteristic that Apple
-        Home renders cleanly, so we expose one Switch service per non-none
-        preset. Turning a switch on calls `climate.set_preset_mode` with
-        that preset name; turning it off reverts to the entity's "none"
-        preset. The other switches flip themselves off via the state-push
-        path once HA reflects the new preset.
-
-        Entities without a "none" preset (case-insensitive) are skipped —
-        there's no way to represent "no preset active" for those, so
-        turning a switch off would have no sensible meaning.
-        """
-        if not self.config.get(CONF_LINKED_PRESET_MODES, True):
-            return
-        state = self.hass.states.get(self.entity_id)
-        if state is None:
-            return
-        features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
-        if not features & ClimateEntityFeature.PRESET_MODE:
-            return
-        preset_modes: list[str] = list(
-            state.attributes.get(ATTR_PRESET_MODES) or []
-        )
-        none_preset = next(
-            (m for m in preset_modes if m.lower() == "none"), None
-        )
-        if none_preset is None:
-            _LOGGER.debug(
-                "HeaterCoolerPlus %s: no 'none' preset in %s — skipping "
-                "preset switches (no off state to revert to)",
-                self.entity_id,
-                preset_modes,
-            )
-            return
-        exposed = [m for m in preset_modes if m != none_preset]
-        if not exposed:
-            return
-
-        self._plus_none_preset = none_preset
-        serv_thermostat = self.get_service(SERV_THERMOSTAT)
-        current = state.attributes.get(ATTR_PRESET_MODE)
-
-        for preset in exposed:
-            # unique_id must differ per service on the same accessory — the
-            # vendored HomeIIDManager derives a stable IID from it, and two
-            # Switch services without unique_id collide (both hash to the
-            # same IID).
-            serv = self.add_preload_service(
-                SERV_SWITCH,
-                [CHAR_ON, CHAR_NAME],
-                unique_id=f"preset_{preset}",
-            )
-            serv.display_name = preset.title()
-            serv.configure_char(CHAR_NAME, value=preset.title())
-            char_on = serv.configure_char(
-                CHAR_ON,
-                value=1 if current == preset else 0,
-                # Bind preset into the lambda so each switch resolves to
-                # its own preset name when toggled.
-                setter_callback=lambda v, p=preset: self._plus_set_preset(p, v),
-            )
-            self._plus_preset_chars[preset] = char_on
-            serv_thermostat.add_linked_service(serv)
-
-        _LOGGER.debug(
-            "HeaterCoolerPlus attached %d preset switches to %s (off=%r): %s",
-            len(exposed),
-            self.entity_id,
-            none_preset,
-            exposed,
-        )
-
-    def _plus_set_preset(self, preset: str, value: int) -> None:
-        """Apple Home toggled a preset switch."""
-        if value:
-            target = preset
-        elif self._plus_none_preset is not None:
-            target = self._plus_none_preset
-        else:
-            return
-        self.async_call_service(
-            CLIMATE_DOMAIN,
-            SERVICE_SET_PRESET_MODE,
-            {ATTR_ENTITY_ID: self.entity_id, ATTR_PRESET_MODE: target},
-        )
 
     # --- Linked humidity sensor --------------------------------------------
 
@@ -452,7 +364,76 @@ class HeaterCoolerPlus(Thermostat):
                     0 if current_swing == self._plus_swing_off else 1
                 )
 
-        if self._plus_preset_chars:
-            current_preset = new_state.attributes.get(ATTR_PRESET_MODE)
-            for preset, char in self._plus_preset_chars.items():
-                char.set_value(1 if preset == current_preset else 0)
+
+def extract_exposable_presets(
+    state: State,
+) -> tuple[list[str], str | None]:
+    """Return (presets_to_expose, none_preset_name) for a climate state.
+
+    Presets are only exposable when the entity advertises both
+    `ClimateEntityFeature.PRESET_MODE` and a case-insensitive `'none'`
+    entry in `preset_modes` (so we have a defined "no preset active"
+    state to revert to when a switch is turned off). Otherwise returns
+    `([], None)` and the bridge skips preset accessories for that entity.
+    """
+    features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
+    if not features & ClimateEntityFeature.PRESET_MODE:
+        return [], None
+    preset_modes = list(state.attributes.get(ATTR_PRESET_MODES) or [])
+    none_preset = next(
+        (m for m in preset_modes if m.lower() == "none"), None
+    )
+    if none_preset is None:
+        return [], None
+    return [m for m in preset_modes if m != none_preset], none_preset
+
+
+class PresetSwitchAccessory(HomeAccessory):
+    """A standalone Switch accessory that controls one preset on a climate entity.
+
+    Rendered in Apple Home as its own tile with its own user-editable
+    name (e.g. "Air Conditioner — Away"). Why standalone rather than
+    linked into the main HeaterCoolerPlus tile: Apple Home's Home app
+    does not reliably honour Name characteristics on repeated linked
+    services of the same type; it renders them as generic "Switch"
+    entries with no label. A separate accessory gets its own
+    AccessoryInformation service and a proper display name.
+
+    The bridge passes the preset's HA-side name and the entity's
+    `none` preset name via two internal keys in the `config` dict
+    (`PLUS_CONFIG_PRESET` / `PLUS_CONFIG_NONE_PRESET`) — this avoids
+    changing `HomeAccessory`'s `__init__` signature.
+    """
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args, category=CATEGORY_SWITCH)
+        self._preset: str = self.config[PLUS_CONFIG_PRESET]
+        self._none_preset: str = self.config[PLUS_CONFIG_NONE_PRESET]
+
+        state = self.hass.states.get(self.entity_id)
+        current = (
+            state.attributes.get(ATTR_PRESET_MODE) if state is not None else None
+        )
+
+        serv = self.add_preload_service(SERV_SWITCH)
+        self.char_on = serv.configure_char(
+            CHAR_ON,
+            value=1 if current == self._preset else 0,
+            setter_callback=self._set_on,
+        )
+
+    def _set_on(self, value: int) -> None:
+        """Apple Home toggled this preset's switch."""
+        target = self._preset if value else self._none_preset
+        self.async_call_service(
+            CLIMATE_DOMAIN,
+            SERVICE_SET_PRESET_MODE,
+            {ATTR_ENTITY_ID: self.entity_id, ATTR_PRESET_MODE: target},
+        )
+
+    @callback
+    def async_update_state(self, new_state: State) -> None:
+        """Push the parent entity's preset changes back to this switch."""
+        current = new_state.attributes.get(ATTR_PRESET_MODE)
+        self.char_on.set_value(1 if current == self._preset else 0)
+
