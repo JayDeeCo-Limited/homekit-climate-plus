@@ -33,11 +33,27 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_ENTITY_CONFIG,
+    CONF_LINKED_BATTERY_SENSOR,
+    CONF_LINKED_HUMIDITY_SENSOR,
+    CONF_LINKED_PRESET_MODES,
+    CONF_LINKED_SWING_MODE,
     CONF_PIN,
     CONF_PORT,
     DEFAULT_NAME,
     DEFAULT_PORT,
     DOMAIN,
+)
+
+# Keys and suffix separator used to build per-entity form field names.
+# Example: "climate.daikin_ac__linked_swing_mode". Submit-time parsing
+# splits on the separator, so pick something that can't appear in a
+# valid entity_id or option key.
+_SUFFIX_SEP = "__"
+_PER_ENTITY_KEYS = (
+    CONF_LINKED_SWING_MODE,
+    CONF_LINKED_PRESET_MODES,
+    CONF_LINKED_HUMIDITY_SENSOR,
+    CONF_LINKED_BATTERY_SENSOR,
 )
 
 
@@ -117,34 +133,35 @@ class HomeKitClimatePlusConfigFlow(
 
 
 class HomeKitClimatePlusOptionsFlow(config_entries.OptionsFlow):
-    """Options flow: edit the list of climate entities after initial setup.
+    """Two-step options flow.
 
-    Do NOT assign `self.config_entry` in __init__ — from HA 2024.x onward
-    it's a read-only property on the base class, raising
-    `AttributeError: property 'config_entry' of OptionsFlow has no
-    setter`. The base class wires the entry via context; reading
-    `self.config_entry` inside step methods works fine.
+    Step 1 (`init`) picks which climate entities this bridge exposes.
+    Step 2 (`entity_options`) shows per-entity toggles for the selected
+    entities — swing, presets, linked humidity / battery sensors. Both
+    are persisted together into `entry.options[CONF_ENTITY_CONFIG]`.
+
+    Do NOT assign `self.config_entry` in `__init__` — it's a read-only
+    property on HA's `OptionsFlow` base class from 2024.x on; the
+    framework wires the entry via context. Constructor takes no args.
     """
+
+    def __init__(self) -> None:
+        self._pending_entities: list[str] = []
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        current_entity_config: dict[str, dict[str, Any]] = (
-            self.config_entry.options.get(CONF_ENTITY_CONFIG)
-            or self.config_entry.data.get(CONF_ENTITY_CONFIG, {})
-        )
+        current_entity_config = self._current_entity_config()
 
         if user_input is not None:
-            selected: list[str] = user_input.get("entities", [])
-            # Preserve existing per-entity config for entities still selected;
-            # new entities get a blank dict.
-            new_entity_config = {
-                eid: current_entity_config.get(eid, {}) for eid in selected
-            }
-            return self.async_create_entry(
-                title="",
-                data={CONF_ENTITY_CONFIG: new_entity_config},
-            )
+            self._pending_entities = user_input.get("entities", [])
+            if not self._pending_entities:
+                # Empty list is a valid config (bridge with no accessories
+                # — odd but legal). Skip straight to save.
+                return self.async_create_entry(
+                    title="", data={CONF_ENTITY_CONFIG: {}}
+                )
+            return await self.async_step_entity_options()
 
         schema = vol.Schema(
             {
@@ -154,3 +171,101 @@ class HomeKitClimatePlusOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_entity_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        current_entity_config = self._current_entity_config()
+
+        if user_input is not None:
+            new_entity_config: dict[str, dict[str, Any]] = {}
+            for eid in self._pending_entities:
+                settings: dict[str, Any] = {
+                    # Preserve any advanced keys the UI doesn't expose
+                    # (fan_mode_mapping, linked_fan) from the existing config.
+                    k: v
+                    for k, v in current_entity_config.get(eid, {}).items()
+                    if k not in _PER_ENTITY_KEYS
+                }
+                for key in _PER_ENTITY_KEYS:
+                    form_key = f"{eid}{_SUFFIX_SEP}{key}"
+                    if form_key not in user_input:
+                        continue
+                    value = user_input[form_key]
+                    # Drop empty entity selectors rather than save them as
+                    # the empty string, which cv.entity_id would reject.
+                    if key in (
+                        CONF_LINKED_HUMIDITY_SENSOR,
+                        CONF_LINKED_BATTERY_SENSOR,
+                    ):
+                        if value:
+                            settings[key] = value
+                    else:
+                        settings[key] = value
+                new_entity_config[eid] = settings
+            return self.async_create_entry(
+                title="", data={CONF_ENTITY_CONFIG: new_entity_config}
+            )
+
+        # Build the dynamic schema.
+        schema_fields: dict[Any, Any] = {}
+        placeholders: dict[str, str] = {}
+        for eid in self._pending_entities:
+            state = self.hass.states.get(eid)
+            friendly = (
+                state.attributes.get("friendly_name", eid) if state else eid
+            )
+            placeholders[eid] = friendly  # for translation lookup if any
+            cur = current_entity_config.get(eid, {})
+
+            schema_fields[
+                vol.Optional(
+                    f"{eid}{_SUFFIX_SEP}{CONF_LINKED_SWING_MODE}",
+                    default=cur.get(CONF_LINKED_SWING_MODE, True),
+                )
+            ] = bool
+
+            schema_fields[
+                vol.Optional(
+                    f"{eid}{_SUFFIX_SEP}{CONF_LINKED_PRESET_MODES}",
+                    default=cur.get(CONF_LINKED_PRESET_MODES, True),
+                )
+            ] = bool
+
+            humidity_default = cur.get(CONF_LINKED_HUMIDITY_SENSOR, "")
+            schema_fields[
+                vol.Optional(
+                    f"{eid}{_SUFFIX_SEP}{CONF_LINKED_HUMIDITY_SENSOR}",
+                    default=humidity_default,
+                )
+            ] = selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", multiple=False
+                )
+            )
+
+            battery_default = cur.get(CONF_LINKED_BATTERY_SENSOR, "")
+            schema_fields[
+                vol.Optional(
+                    f"{eid}{_SUFFIX_SEP}{CONF_LINKED_BATTERY_SENSOR}",
+                    default=battery_default,
+                )
+            ] = selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", multiple=False
+                )
+            )
+
+        return self.async_show_form(
+            step_id="entity_options",
+            data_schema=vol.Schema(schema_fields),
+            description_placeholders={
+                "entity_count": str(len(self._pending_entities)),
+            },
+        )
+
+    def _current_entity_config(self) -> dict[str, dict[str, Any]]:
+        return (
+            self.config_entry.options.get(CONF_ENTITY_CONFIG)
+            or self.config_entry.data.get(CONF_ENTITY_CONFIG, {})
+        )
