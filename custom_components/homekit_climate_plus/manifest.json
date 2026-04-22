@@ -1,7 +1,7 @@
 {
   "domain": "homekit_climate_plus",
   "name": "HomeKit Climate Plus",
-  "after_dependencies": ["homekit"],
+  "after_dependencies": ["homekit", "zeroconf"],
   "codeowners": ["@JayDeeCo"],
   "dependencies": [],
   "documentation": "https://github.com/JayDeeCo-Limited/homekit-climate-plus",
