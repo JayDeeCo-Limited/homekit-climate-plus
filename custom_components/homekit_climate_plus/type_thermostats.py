@@ -25,20 +25,27 @@ from typing import Any
 from homeassistant.components.climate import (
     ATTR_FAN_MODE,
     ATTR_FAN_MODES,
+    ATTR_PRESET_MODE,
+    ATTR_PRESET_MODES,
     ATTR_SWING_MODE,
     ATTR_SWING_MODES,
     ClimateEntityFeature,
     DOMAIN as CLIMATE_DOMAIN,
     HVACMode,
     SERVICE_SET_FAN_MODE,
+    SERVICE_SET_PRESET_MODE,
     SERVICE_SET_SWING_MODE,
 )
 from homeassistant.components.homekit.const import (
     CHAR_ACTIVE,
+    CHAR_NAME,
+    CHAR_ON,
     CHAR_ROTATION_SPEED,
     CHAR_SWING_MODE,
     PROP_MIN_STEP,
     SERV_FANV2,
+    SERV_HUMIDITY_SENSOR,
+    SERV_SWITCH,
     SERV_THERMOSTAT,
 )
 from homeassistant.const import (
@@ -50,7 +57,12 @@ from homeassistant.const import (
 )
 from homeassistant.core import State, callback
 
-from .const import CONF_FAN_MODE_MAPPING, CONF_LINKED_SWING_MODE
+from .const import (
+    CONF_FAN_MODE_MAPPING,
+    CONF_LINKED_HUMIDITY_SENSOR,
+    CONF_LINKED_PRESET_MODES,
+    CONF_LINKED_SWING_MODE,
+)
 from .util import auto_fan_mode_mapping, fan_mode_for_percent
 from .vendored.type_thermostats import Thermostat
 
@@ -71,9 +83,15 @@ class HeaterCoolerPlus(Thermostat):
         self._plus_char_swing = None
         self._plus_swing_off: str | None = None
         self._plus_swing_on: str | None = None
+        self._plus_preset_chars: dict[str, Any] = {}
+        self._plus_none_preset: str | None = None
+        self._plus_char_humidity = None
+        self._plus_linked_humidity_entity: str | None = None
         super().__init__(*args)
         self._plus_setup_fan()
         self._plus_setup_swing()
+        self._plus_setup_presets()
+        self._plus_setup_humidity()
 
     # --- Fanv2 provisioning -------------------------------------------------
 
@@ -202,6 +220,151 @@ class HeaterCoolerPlus(Thermostat):
         on_mode = next((m for m in swing_modes if m != off_mode), None)
         return off_mode, on_mode
 
+    # --- Preset-mode switches -----------------------------------------------
+
+    def _plus_setup_presets(self) -> None:
+        """Expose each preset as a linked Switch. Mutually exclusive by convention.
+
+        HomeKit has no native "preset selector" characteristic that Apple
+        Home renders cleanly, so we expose one Switch service per non-none
+        preset. Turning a switch on calls `climate.set_preset_mode` with
+        that preset name; turning it off reverts to the entity's "none"
+        preset. The other switches flip themselves off via the state-push
+        path once HA reflects the new preset.
+
+        Entities without a "none" preset (case-insensitive) are skipped —
+        there's no way to represent "no preset active" for those, so
+        turning a switch off would have no sensible meaning.
+        """
+        if not self.config.get(CONF_LINKED_PRESET_MODES, True):
+            return
+        state = self.hass.states.get(self.entity_id)
+        if state is None:
+            return
+        features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
+        if not features & ClimateEntityFeature.PRESET_MODE:
+            return
+        preset_modes: list[str] = list(
+            state.attributes.get(ATTR_PRESET_MODES) or []
+        )
+        none_preset = next(
+            (m for m in preset_modes if m.lower() == "none"), None
+        )
+        if none_preset is None:
+            _LOGGER.debug(
+                "HeaterCoolerPlus %s: no 'none' preset in %s — skipping "
+                "preset switches (no off state to revert to)",
+                self.entity_id,
+                preset_modes,
+            )
+            return
+        exposed = [m for m in preset_modes if m != none_preset]
+        if not exposed:
+            return
+
+        self._plus_none_preset = none_preset
+        serv_thermostat = self.get_service(SERV_THERMOSTAT)
+        current = state.attributes.get(ATTR_PRESET_MODE)
+
+        for preset in exposed:
+            serv = self.add_preload_service(
+                SERV_SWITCH, [CHAR_ON, CHAR_NAME]
+            )
+            serv.configure_char(CHAR_NAME, value=preset.title())
+            char_on = serv.configure_char(
+                CHAR_ON,
+                value=1 if current == preset else 0,
+                # Bind preset into the lambda so each switch resolves to
+                # its own preset name when toggled.
+                setter_callback=lambda v, p=preset: self._plus_set_preset(p, v),
+            )
+            self._plus_preset_chars[preset] = char_on
+            serv_thermostat.add_linked_service(serv)
+
+        _LOGGER.debug(
+            "HeaterCoolerPlus attached %d preset switches to %s (off=%r): %s",
+            len(exposed),
+            self.entity_id,
+            none_preset,
+            exposed,
+        )
+
+    def _plus_set_preset(self, preset: str, value: int) -> None:
+        """Apple Home toggled a preset switch."""
+        if value:
+            target = preset
+        elif self._plus_none_preset is not None:
+            target = self._plus_none_preset
+        else:
+            return
+        self.async_call_service(
+            CLIMATE_DOMAIN,
+            SERVICE_SET_PRESET_MODE,
+            {ATTR_ENTITY_ID: self.entity_id, ATTR_PRESET_MODE: target},
+        )
+
+    # --- Linked humidity sensor --------------------------------------------
+
+    def _plus_setup_humidity(self) -> None:
+        """Expose a configured humidity sensor as a linked HumiditySensor.
+
+        The base `HomeAccessory` already auto-wires `linked_battery_sensor`
+        — we only need to handle humidity here.
+        """
+        sensor_id = self.config.get(CONF_LINKED_HUMIDITY_SENSOR)
+        if not sensor_id:
+            return
+        sensor_state = self.hass.states.get(sensor_id)
+        if sensor_state is None:
+            _LOGGER.warning(
+                "%s: linked_humidity_sensor %r not found — skipping",
+                self.entity_id,
+                sensor_id,
+            )
+            return
+
+        try:
+            initial = float(sensor_state.state)
+        except (TypeError, ValueError):
+            initial = 50.0
+
+        serv_humidity = self.add_preload_service(SERV_HUMIDITY_SENSOR)
+        serv_thermostat = self.get_service(SERV_THERMOSTAT)
+        serv_thermostat.add_linked_service(serv_humidity)
+        self._plus_char_humidity = serv_humidity.configure_char(
+            "CurrentRelativeHumidity", value=max(0.0, min(100.0, initial))
+        )
+        self._plus_linked_humidity_entity = sensor_id
+
+        # Track the linked sensor so humidity updates reach HomeKit.
+        from homeassistant.helpers.event import (  # noqa: PLC0415 — runtime import avoids top-level homekit chain
+            async_track_state_change_event,
+        )
+
+        def _humidity_changed(event: Any) -> None:
+            new_state = event.data.get("new_state")
+            if new_state is None:
+                return
+            try:
+                v = float(new_state.state)
+            except (TypeError, ValueError):
+                return
+            if self._plus_char_humidity is not None:
+                self._plus_char_humidity.set_value(max(0.0, min(100.0, v)))
+
+        self._subscriptions.append(
+            async_track_state_change_event(
+                self.hass, [sensor_id], _humidity_changed
+            )
+        )
+
+        _LOGGER.debug(
+            "HeaterCoolerPlus attached humidity sensor %s → %s (initial %.1f%%)",
+            sensor_id,
+            self.entity_id,
+            initial,
+        )
+
     # --- Utility ------------------------------------------------------------
 
     @staticmethod
@@ -280,3 +443,8 @@ class HeaterCoolerPlus(Thermostat):
                 self._plus_char_swing.set_value(
                     0 if current_swing == self._plus_swing_off else 1
                 )
+
+        if self._plus_preset_chars:
+            current_preset = new_state.attributes.get(ATTR_PRESET_MODE)
+            for preset, char in self._plus_preset_chars.items():
+                char.set_value(1 if preset == current_preset else 0)
