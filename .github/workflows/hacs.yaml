@@ -14,7 +14,3 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # brands assets / upstream brands-repo listing are v1.0 tasks
-          # (see PRD §7 "v1.0 — Stabilization"). Unignore before submitting
-          # to the HACS default store.
-          ignore: brands
