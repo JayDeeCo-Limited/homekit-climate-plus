@@ -110,7 +110,10 @@ class HomeKitClimatePlusConfigFlow(
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> HomeKitClimatePlusOptionsFlow:
-        return HomeKitClimatePlusOptionsFlow(config_entry)
+        # In HA 2024.x+ the OptionsFlow base wires the config entry itself
+        # via flow context; we neither accept it in __init__ nor assign it
+        # to self. Just return a bare instance.
+        return HomeKitClimatePlusOptionsFlow()
 
 
 class HomeKitClimatePlusOptionsFlow(config_entries.OptionsFlow):
