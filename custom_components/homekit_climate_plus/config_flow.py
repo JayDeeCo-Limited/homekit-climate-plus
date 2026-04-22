@@ -114,10 +114,14 @@ class HomeKitClimatePlusConfigFlow(
 
 
 class HomeKitClimatePlusOptionsFlow(config_entries.OptionsFlow):
-    """Options flow: edit the list of climate entities after initial setup."""
+    """Options flow: edit the list of climate entities after initial setup.
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    Do NOT assign `self.config_entry` in __init__ — from HA 2024.x onward
+    it's a read-only property on the base class, raising
+    `AttributeError: property 'config_entry' of OptionsFlow has no
+    setter`. The base class wires the entry via context; reading
+    `self.config_entry` inside step methods works fine.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
