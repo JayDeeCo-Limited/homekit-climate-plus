@@ -11,8 +11,12 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.const import (
+    CONF_NAME,
+    EVENT_HOMEASSISTANT_STARTED,
+    EVENT_HOMEASSISTANT_STOP,
+)
+from homeassistant.core import CoreState, Event, HomeAssistant
 import homeassistant.helpers.config_validation as cv
 
 from .const import (
@@ -82,10 +86,22 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         pin=domain_conf.get(CONF_PIN),
         entity_config=domain_conf.get(CONF_ENTITY_CONFIG, {}),
     )
-    await bridge.async_start()
+
+    async def _start(_event: Event | None = None) -> None:
+        await bridge.async_start()
 
     async def _stop(_event: Event) -> None:
         await bridge.async_stop()
+
+    # Wait for HA to finish setting up every other integration before we
+    # build accessories — otherwise `hass.states.get(entity_id)` returns
+    # None for any entity whose platform hasn't reached `add_entities` yet,
+    # and those accessories get silently skipped. For reloads (HA already
+    # running), start immediately.
+    if hass.state is CoreState.running:
+        await _start()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start)
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
 
