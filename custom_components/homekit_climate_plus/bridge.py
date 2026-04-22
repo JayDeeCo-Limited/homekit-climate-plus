@@ -15,6 +15,7 @@ context plumbing.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -109,6 +110,12 @@ class HomeKitClimatePlusBridge:
             return driver, bridge
 
         self._driver, self._bridge = await self.hass.async_add_executor_job(_build)
+
+        # Stamp a stable non-zero MAC so the bridge advertises a unique
+        # `id=` in its mDNS TXT record. Without this, we collide with every
+        # other HA-spawned homekit bridge (they all use EMPTY_MAC at init)
+        # and iPhones mis-route pair-verify requests.
+        self._driver.state.mac = self.stable_mac
 
         self._register_climate_accessories()
 
