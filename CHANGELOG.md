@@ -4,6 +4,33 @@ All notable changes to this project will be documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows [SemVer](https://semver.org/).
 
+## [0.5.0]
+
+### Added
+- **UI config flow**: new integrations can be set up from **Settings →
+  Devices & services → Add Integration → HomeKit Climate Plus**. The
+  flow asks for a bridge name, port, optional fixed PIN, and which
+  `climate.*` entities to include. An **Options** button on the entry
+  lets you add or remove entities later; the bridge auto-reloads.
+- YAML-based config is still fully supported. On startup, any YAML
+  block auto-imports into a config entry (source `import`) transparently,
+  so existing installs keep working unchanged.
+- Brand assets: 256×256 `icon.png`, 512×512 `icon@2x.png`, and matching
+  logos shipped in `custom_components/homekit_climate_plus/brand/`.
+  The HACS `brands` check is no longer ignored.
+- [`docs/VENDORING.md`](docs/VENDORING.md): formal policy covering
+  what can and can't go in `vendored/`, the resync procedure, and the
+  target cadence.
+
+### Changed
+- `__init__.py` split into the standard HA `async_setup` /
+  `async_setup_entry` / `async_unload_entry` trio. Runtime behaviour is
+  identical to v0.4.0; bridge lifecycle is now scoped to the config
+  entry (entry removal cleanly stops the bridge).
+- README revised for v0.5.0: documents the UI flow, the per-entity
+  options table, and a new "How it works" section pointing at
+  `PRD.md` / `docs/VENDORING.md`.
+
 ## [0.4.0]
 
 ### Added

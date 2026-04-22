@@ -1,3 +1,40 @@
 {
-  "title": "HomeKit Climate Plus"
+  "title": "HomeKit Climate Plus",
+  "config": {
+    "step": {
+      "user": {
+        "title": "HomeKit Climate Plus",
+        "description": "Set up a new bridge. Pick a name, a free port for the HomeKit server, and the climate entities to expose.\n\nAfter creation, Home Assistant will show a persistent notification with the Apple Home setup code.",
+        "data": {
+          "name": "Bridge name",
+          "port": "Port",
+          "pin": "Setup code (optional; auto-generated if blank)",
+          "entities": "Climate entities to expose"
+        },
+        "data_description": {
+          "name": "Shown in Apple Home during pairing.",
+          "port": "Any free TCP port. Stock HomeKit Bridge uses 21064; accessory-mode bridges climb from there. A default of 21065 is usually safe.",
+          "pin": "Format XXX-XX-XXX. Leave blank to let pyhap generate one; fix it here if you want the PIN to stay the same across restarts."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This bridge is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Climate entities",
+        "description": "Add or remove climate entities on this bridge. The bridge will reload automatically.",
+        "data": {
+          "entities": "Climate entities to expose"
+        }
+      }
+    }
+  }
 }
